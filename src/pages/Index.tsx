@@ -253,12 +253,18 @@ const Index = () => {
                     <SelectValue placeholder="Select camera / capture card" />
                   </SelectTrigger>
                   <SelectContent>
-                    {videoDevices.length === 0 && <SelectItem value="none" disabled>No devices found</SelectItem>}
-                    {videoDevices.map((d) => (
-                      <SelectItem key={d.deviceId} value={d.deviceId}>
-                        {d.label}
+                    {videoDevices.filter((d) => d.deviceId).length === 0 && (
+                      <SelectItem value="none" disabled>
+                        No devices found — grant camera permission
                       </SelectItem>
-                    ))}
+                    )}
+                    {videoDevices
+                      .filter((d) => d.deviceId)
+                      .map((d) => (
+                        <SelectItem key={d.deviceId} value={d.deviceId}>
+                          {d.label || "Unnamed camera"}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
                 <Button onClick={refresh} variant="ghost" size="sm" className="w-full">
