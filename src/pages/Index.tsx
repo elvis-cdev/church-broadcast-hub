@@ -25,7 +25,11 @@ import { AudioMeter } from "@/components/streaming/AudioMeter";
 import { ScenesPanel } from "@/components/streaming/ScenesPanel";
 import { DestinationsPanel, useStoredDestinations } from "@/components/streaming/DestinationsPanel";
 import { PlatformIcon } from "@/components/streaming/PlatformIcon";
+import { ScriptureListenerPanel } from "@/components/streaming/ScriptureListenerPanel";
+import { useScriptureListener, type ScriptureSuggestion } from "@/hooks/use-scripture-listener";
 import { isElectron } from "@/lib/electron-bridge";
+import { toast } from "@/hooks/use-toast";
+import { BookOpen } from "lucide-react";
 import type { Scene } from "@/lib/streaming-types";
 
 const DEFAULT_SCENES: Scene[] = [
