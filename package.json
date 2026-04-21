@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -10,7 +11,12 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "electron": "electron .",
+    "electron:dev": "ELECTRON_DEV=1 electron .",
+    "electron:pack:linux": "vite build && electron-packager . \"Sanctuary Stream\" --platform=linux --arch=x64 --out=electron-release --overwrite --ignore=^/src --ignore=^/public --ignore=^/electron-release",
+    "electron:pack:mac": "vite build && electron-packager . \"Sanctuary Stream\" --platform=darwin --arch=x64 --out=electron-release --overwrite --ignore=^/src --ignore=^/public --ignore=^/electron-release",
+    "electron:pack:win": "vite build && electron-packager . \"Sanctuary Stream\" --platform=win32 --arch=x64 --out=electron-release --overwrite --ignore=^/src --ignore=^/public --ignore=^/electron-release"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
