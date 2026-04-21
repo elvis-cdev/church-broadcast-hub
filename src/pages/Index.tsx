@@ -25,7 +25,11 @@ import { AudioMeter } from "@/components/streaming/AudioMeter";
 import { ScenesPanel } from "@/components/streaming/ScenesPanel";
 import { DestinationsPanel, useStoredDestinations } from "@/components/streaming/DestinationsPanel";
 import { PlatformIcon } from "@/components/streaming/PlatformIcon";
+import { ScriptureListenerPanel } from "@/components/streaming/ScriptureListenerPanel";
+import { useScriptureListener, type ScriptureSuggestion } from "@/hooks/use-scripture-listener";
 import { isElectron } from "@/lib/electron-bridge";
+import { toast } from "@/hooks/use-toast";
+import { BookOpen } from "lucide-react";
 import type { Scene } from "@/lib/streaming-types";
 
 const DEFAULT_SCENES: Scene[] = [
@@ -69,12 +73,47 @@ const Index = () => {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engine = useStreamEngine();
+  const listener = useScriptureListener();
 
   // Auto-pick first device once we have permission and devices appear
   useEffect(() => {
     if (!videoDeviceId && videoDevices[0]) setVideoDeviceId(videoDevices[0].deviceId);
     if (!audioDeviceId && audioDevices[0]) setAudioDeviceId(audioDevices[0].deviceId);
   }, [videoDevices, audioDevices, videoDeviceId, audioDeviceId]);
+
+  /**
+   * Apply an AI-detected scripture suggestion: update (or create) the
+   * scripture scene with the new reference/text and switch to it.
+   */
+  const applyScripture = (s: ScriptureSuggestion) => {
+    let targetId: string | null = null;
+    setScenes((prev) => {
+      const existing = prev.find((sc) => sc.type === "scripture");
+      if (existing) {
+        targetId = existing.id;
+        return prev.map((sc) =>
+          sc.id === existing.id
+            ? { ...sc, scriptureRef: s.reference, scriptureText: s.text }
+            : sc,
+        );
+      }
+      const created: Scene = {
+        id: crypto.randomUUID(),
+        name: "Scripture (AI)",
+        type: "scripture",
+        scriptureRef: s.reference,
+        scriptureText: s.text,
+      };
+      targetId = created.id;
+      return [...prev, created];
+    });
+    if (targetId) setActiveSceneId(targetId);
+    listener.dismiss(s.id);
+    toast({
+      title: "Scripture pushed live",
+      description: `${s.reference} is now on the preview.`,
+    });
+  };
 
   const handleGoLive = async () => {
     if (!canvasRef.current) return;
@@ -332,6 +371,21 @@ const Index = () => {
                 </div>
               </TabsContent>
             </Tabs>
+          </Section>
+
+          <Section title="Scripture AI" icon={BookOpen}>
+            <ScriptureListenerPanel
+              supported={listener.supported}
+              listening={listener.listening}
+              partialTranscript={listener.partialTranscript}
+              lastError={listener.lastError}
+              suggestions={listener.suggestions}
+              callsThisSession={listener.callsThisSession}
+              onStart={listener.start}
+              onStop={listener.stop}
+              onApply={applyScripture}
+              onDismiss={listener.dismiss}
+            />
           </Section>
 
           <Section title="Stream quality" icon={Settings}>

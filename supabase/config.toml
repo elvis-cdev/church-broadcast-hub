@@ -1,0 +1,4 @@
+project_id = "uljjagildamzcffkuxkx"
+
+[functions.scripture-detect]
+verify_jwt = false
