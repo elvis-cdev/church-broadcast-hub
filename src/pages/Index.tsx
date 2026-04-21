@@ -279,12 +279,18 @@ const Index = () => {
                       <SelectValue placeholder="Select audio interface" />
                     </SelectTrigger>
                     <SelectContent>
-                      {audioDevices.length === 0 && <SelectItem value="none" disabled>No devices found</SelectItem>}
-                      {audioDevices.map((d) => (
-                        <SelectItem key={d.deviceId} value={d.deviceId}>
-                          {d.label}
+                      {audioDevices.filter((d) => d.deviceId).length === 0 && (
+                        <SelectItem value="none" disabled>
+                          No devices found — grant microphone permission
                         </SelectItem>
-                      ))}
+                      )}
+                      {audioDevices
+                        .filter((d) => d.deviceId)
+                        .map((d) => (
+                          <SelectItem key={d.deviceId} value={d.deviceId}>
+                            {d.label || "Unnamed input"}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </div>
