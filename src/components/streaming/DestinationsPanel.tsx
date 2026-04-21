@@ -102,18 +102,12 @@ export function DestinationsPanel({ destinations, onChange, disabled }: Props) {
                         className="h-9 font-mono text-xs"
                       />
                     ) : (
-                      <Select
+                      <Input
                         value={d.rtmpUrl}
-                        onValueChange={(v) => update(d.id, { rtmpUrl: v })}
+                        readOnly
                         disabled={disabled}
-                      >
-                        <SelectTrigger className="h-9 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={preset?.rtmpUrl ?? ""}>{preset?.rtmpUrl}</SelectItem>
-                        </SelectContent>
-                      </Select>
+                        className="h-9 font-mono text-xs bg-secondary/40"
+                      />
                     )}
                   </div>
                   <div className="sm:col-span-3 space-y-1">
