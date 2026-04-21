@@ -373,6 +373,21 @@ const Index = () => {
             </Tabs>
           </Section>
 
+          <Section title="Scripture AI" icon={BookOpen}>
+            <ScriptureListenerPanel
+              supported={listener.supported}
+              listening={listener.listening}
+              partialTranscript={listener.partialTranscript}
+              lastError={listener.lastError}
+              suggestions={listener.suggestions}
+              callsThisSession={listener.callsThisSession}
+              onStart={listener.start}
+              onStop={listener.stop}
+              onApply={applyScripture}
+              onDismiss={listener.dismiss}
+            />
+          </Section>
+
           <Section title="Stream quality" icon={Settings}>
             <div className="space-y-3">
               <div className="space-y-1">
