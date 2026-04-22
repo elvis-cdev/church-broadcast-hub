@@ -20,8 +20,9 @@ type ISpeechRecognition = {
   stop: () => void;
   abort: () => void;
   onresult: ((e: SpeechRecognitionEvent) => void) | null;
-  onerror: ((e: { error: string }) => void) | null;
+  onerror: ((e: { error: string; message?: string }) => void) | null;
   onend: (() => void) | null;
+  onstart: (() => void) | null;
 };
 
 declare global {
@@ -33,16 +34,14 @@ declare global {
 
 export type ScriptureSuggestion = {
   id: string;
-  reference: string; // e.g. "John 3:16"
-  text: string; // verse text from bible-api
-  translation: string; // e.g. "kjv"
+  reference: string;
+  text: string;
+  translation: string;
   confidence: number;
   detectedAt: number;
-  transcript: string; // the snippet that triggered detection
+  transcript: string;
 };
 
-// Bible book names (66 books) used in the keyword pre-filter so we never
-// spend AI credits on transcripts that obviously contain no scripture.
 const BOOK_KEYWORDS = [
   "genesis", "exodus", "leviticus", "numbers", "deuteronomy",
   "joshua", "judges", "ruth", "samuel", "kings", "chronicles",
@@ -55,15 +54,12 @@ const BOOK_KEYWORDS = [
   "corinthians", "galatians", "ephesians", "philippians",
   "colossians", "thessalonians", "timothy", "titus", "philemon",
   "hebrews", "james", "peter", "jude", "revelation", "revelations",
-  // Common spoken cues
   "chapter", "verse",
 ];
 
 const BOOK_REGEX = new RegExp(`\\b(${BOOK_KEYWORDS.join("|")})\\b`, "i");
 
-// Throttle: only one AI call every N ms, regardless of how much speech arrives.
 const MIN_CALL_INTERVAL_MS = 4000;
-// Don't re-detect the same reference within this window.
 const DEDUPE_WINDOW_MS = 60_000;
 
 function looksLikeScripture(text: string): boolean {
@@ -85,6 +81,32 @@ async function fetchVerseText(reference: string): Promise<string | null> {
   }
 }
 
+/**
+ * Translate raw Web Speech API error codes into operator-friendly messages.
+ * The browser's "no-network" specifically means Chrome's cloud speech service
+ * is unreachable — it has nothing to do with our Bible/AI lookups.
+ */
+function explainSpeechError(code: string): string {
+  switch (code) {
+    case "not-allowed":
+    case "service-not-allowed":
+      return "Microphone blocked. Allow mic access in your browser settings, then click Listen again.";
+    case "no-speech":
+      return "No speech detected yet. Speak near the selected microphone.";
+    case "audio-capture":
+      return "No microphone found, or the selected device is in use by another app.";
+    case "network":
+    case "no-network":
+      return "Speech recognition service is offline. Chrome's speech API needs internet access — check your connection and try again.";
+    case "aborted":
+      return "Listening stopped.";
+    case "language-not-supported":
+      return "This browser doesn't support the chosen speech language. Try Chrome or Edge.";
+    default:
+      return `Speech error: ${code}`;
+  }
+}
+
 export type ListenerState = {
   supported: boolean;
   listening: boolean;
@@ -92,6 +114,12 @@ export type ListenerState = {
   lastError: string | null;
   suggestions: ScriptureSuggestion[];
   callsThisSession: number;
+  sourceLabel: string;
+};
+
+type StartOptions = {
+  /** Optional label describing where audio is coming from (shown in UI). */
+  sourceLabel?: string;
 };
 
 export function useScriptureListener() {
@@ -103,6 +131,7 @@ export function useScriptureListener() {
     lastError: null,
     suggestions: [],
     callsThisSession: 0,
+    sourceLabel: "",
   });
 
   const recogRef = useRef<ISpeechRecognition | null>(null);
@@ -160,15 +189,48 @@ export function useScriptureListener() {
     }
   }, []);
 
-  const start = useCallback(() => {
+  /**
+   * Start listening. MUST be called from a user-gesture handler (button click)
+   * so browser security allows mic permission and SpeechRecognition.start().
+   *
+   * The Web Speech API only listens to the browser's *default* input device —
+   * it cannot be bound to a specific MediaStreamTrack. So we ask the user (in the UI)
+   * to set the chosen USB audio input as the system default, and we surface the
+   * label here so they can confirm what's being listened to.
+   */
+  const start = useCallback(async (opts: StartOptions = {}) => {
     if (recogRef.current) return;
     const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Ctor) {
-      setState((s) => ({ ...s, lastError: "Speech recognition not supported in this browser." }));
+      setState((s) => ({
+        ...s,
+        lastError: "Speech recognition not supported. Use Chrome or Edge.",
+      }));
       return;
     }
+
+    // Pre-flight: confirm we can actually open the mic. This surfaces clear
+    // errors (NotAllowedError, NotFoundError, NotReadableError) before we hand off
+    // to the speech engine, which only reports vague codes like "audio-capture".
+    try {
+      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+      probe.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      const name = e instanceof Error ? e.name : "";
+      let msg = "Could not access microphone.";
+      if (name === "NotAllowedError") {
+        msg = "Microphone blocked. Allow mic access in your browser settings, then click Listen again.";
+      } else if (name === "NotFoundError") {
+        msg = "No microphone found. Connect your USB audio interface and refresh devices.";
+      } else if (name === "NotReadableError") {
+        msg = "Microphone is in use by another app. Close OBS / Zoom / etc. and retry.";
+      }
+      setState((s) => ({ ...s, lastError: msg, listening: false }));
+      return;
+    }
+
     const r = new Ctor();
-    r.lang = "en-KE"; // Kenyan English; falls back to en-US if unsupported
+    r.lang = "en-KE";
     r.continuous = true;
     r.interimResults = true;
 
@@ -186,7 +248,6 @@ export function useScriptureListener() {
       }
       if (finalChunk) {
         pendingTextRef.current = (pendingTextRef.current + " " + finalChunk).trim();
-        // Keep a sliding window of ~2 sentences worth
         if (pendingTextRef.current.length > 400) {
           pendingTextRef.current = pendingTextRef.current.slice(-400);
         }
@@ -196,15 +257,22 @@ export function useScriptureListener() {
     };
 
     r.onerror = (e) => {
-      const err = e.error || "speech_error";
-      // 'no-speech' and 'aborted' are expected; don't surface
-      if (err !== "no-speech" && err !== "aborted") {
-        setState((s) => ({ ...s, lastError: `Mic: ${err}` }));
+      const code = e.error || "speech_error";
+      if (code === "no-speech" || code === "aborted") return;
+      const friendly = explainSpeechError(code);
+      setState((s) => ({ ...s, lastError: friendly }));
+      // Network errors from the browser speech service are usually transient
+      // but the recognizer will stop. Don't auto-restart on hard failures.
+      if (code === "network" || code === "not-allowed" || code === "service-not-allowed") {
+        wantRunningRef.current = false;
       }
     };
 
+    r.onstart = () => {
+      setState((s) => ({ ...s, listening: true, lastError: null }));
+    };
+
     r.onend = () => {
-      // Auto-restart if user still wants to listen
       if (wantRunningRef.current && recogRef.current === r) {
         try { r.start(); } catch { /* ignore */ }
       } else {
@@ -215,9 +283,9 @@ export function useScriptureListener() {
 
     recogRef.current = r;
     wantRunningRef.current = true;
+    setState((s) => ({ ...s, sourceLabel: opts.sourceLabel || "system default microphone" }));
     try {
       r.start();
-      setState((s) => ({ ...s, listening: true, lastError: null }));
     } catch (e) {
       setState((s) => ({
         ...s,

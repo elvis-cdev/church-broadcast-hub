@@ -1,4 +1,4 @@
-import { Headphones, MicOff, Mic, X, Send, BookOpen, AlertTriangle } from "lucide-react";
+import { Headphones, MicOff, Mic, X, Send, BookOpen, AlertTriangle, Volume2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { ScriptureSuggestion } from "@/hooks/use-scripture-listener";
@@ -10,6 +10,8 @@ type Props = {
   lastError: string | null;
   suggestions: ScriptureSuggestion[];
   callsThisSession: number;
+  sourceLabel: string;
+  selectedAudioLabel: string;
   onStart: () => void;
   onStop: () => void;
   onApply: (s: ScriptureSuggestion) => void;
@@ -23,6 +25,8 @@ export function ScriptureListenerPanel({
   lastError,
   suggestions,
   callsThisSession,
+  sourceLabel,
+  selectedAudioLabel,
   onStart,
   onStop,
   onApply,
@@ -54,6 +58,23 @@ export function ScriptureListenerPanel({
         </div>
       </div>
 
+      {/* Audio source clarification — Web Speech API can't bind to a specific track,
+          so we tell the operator exactly what it will listen to. */}
+      <div className="rounded-md border border-border bg-secondary/30 p-2 text-[11px] text-muted-foreground space-y-1">
+        <div className="flex items-center gap-1.5">
+          <Volume2 className="h-3 w-3" />
+          <span className="font-semibold text-foreground">Listening source</span>
+        </div>
+        <p>
+          Browser speech recognition only listens to the <span className="font-semibold text-foreground">system default microphone</span>.
+          Selected stream input: <span className="text-foreground">{selectedAudioLabel || "none"}</span>.
+        </p>
+        <p>
+          For preacher audio detection, set your USB audio interface as the system default input
+          (Windows Sound settings / macOS System Settings → Sound → Input), then click Listen.
+        </p>
+      </div>
+
       {listening && (
         <div className="rounded-md bg-secondary/40 border border-border p-2 text-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
@@ -61,7 +82,7 @@ export function ScriptureListenerPanel({
               <span className="absolute inline-flex h-full w-full rounded-full bg-live opacity-60 animate-ping" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-live" />
             </span>
-            <span>Listening for Bible references…</span>
+            <span>Listening from {sourceLabel || "default mic"}…</span>
           </div>
           {partialTranscript && (
             <p className="mt-1 italic text-foreground/70 line-clamp-2">"{partialTranscript}"</p>

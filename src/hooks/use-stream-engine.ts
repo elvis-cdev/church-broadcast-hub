@@ -15,8 +15,9 @@ type StartArgs = {
  * webm/h264 via MediaRecorder, and ships chunks to the Electron main process where
  * FFmpeg muxes them and forwards an RTMP stream to each enabled destination.
  *
- * In a non-Electron browser preview, the recorder runs but RTMP push is unavailable —
- * the UI still shows status so users can validate device/preview setup.
+ * IMPORTANT: in a plain browser (no Electron runtime), RTMP push is impossible —
+ * browsers cannot speak RTMP. Going live in browser mode is hard-blocked here;
+ * the preview/devices/scenes still work for layout testing.
  */
 export function useStreamEngine() {
   const [status, setStatus] = useState<StreamStatus>("idle");
@@ -34,18 +35,40 @@ export function useStreamEngine() {
       if (e.type === "status") {
         setPerDestination((prev) => ({ ...prev, [e.destinationId]: e.status === "ended" ? "idle" : e.status }));
         if (e.status === "live") setStatus("live");
-        if (e.status === "error") setError(e.message || "Stream error");
+        if (e.status === "error") {
+          setError(e.message || "Stream error");
+          setStatus("error");
+        }
       }
     });
   }, []);
 
   const start = useCallback(async ({ canvas, audioStream, destinations, videoBitrateKbps, fps }: StartArgs) => {
     setError(null);
+
+    const b = bridge();
+    if (!b) {
+      setStatus("error");
+      setError(
+        "RTMP streaming requires the desktop app. Browsers cannot push to YouTube/Facebook/Twitch directly. " +
+          "Run: npm run build && npm run electron — or use one of the packaged builds.",
+      );
+      return;
+    }
+
     const enabled = destinations.filter((d) => d.enabled && d.rtmpUrl && d.streamKey);
     if (enabled.length === 0) {
       setError("Add at least one enabled destination with an RTMP URL and stream key.");
       return;
     }
+
+    // Validate URLs early so we can show actionable errors before launching FFmpeg.
+    const bad = enabled.find((d) => !/^rtmps?:\/\//i.test(d.rtmpUrl));
+    if (bad) {
+      setError(`"${bad.name}" has an invalid RTMP URL. It must start with rtmp:// or rtmps://`);
+      return;
+    }
+
     setStatus("connecting");
 
     const canvasStream = canvas.captureStream(fps);
@@ -53,27 +76,24 @@ export function useStreamEngine() {
     if (audioStream) tracks.push(...audioStream.getAudioTracks());
     const combined = new MediaStream(tracks);
 
-    const b = bridge();
-    if (b) {
-      const check = await b.checkFfmpeg();
-      if (!check.available) {
-        setStatus("error");
-        setError(check.hint || "FFmpeg is not installed. Install FFmpeg and try again.");
-        return;
-      }
-      const result = await b.startStream({
-        destinations: enabled.map((d) => ({ id: d.id, name: d.name, rtmpUrl: d.rtmpUrl, streamKey: d.streamKey })),
-        videoBitrateKbps,
-        audioBitrateKbps: 160,
-        fps,
-        width: canvas.width,
-        height: canvas.height,
-      });
-      if (!result.ok) {
-        setStatus("error");
-        setError(result.error || "Failed to start stream");
-        return;
-      }
+    const check = await b.checkFfmpeg();
+    if (!check.available) {
+      setStatus("error");
+      setError(check.hint || "FFmpeg is not installed. Install FFmpeg and try again.");
+      return;
+    }
+    const result = await b.startStream({
+      destinations: enabled.map((d) => ({ id: d.id, name: d.name, rtmpUrl: d.rtmpUrl, streamKey: d.streamKey })),
+      videoBitrateKbps,
+      audioBitrateKbps: 160,
+      fps,
+      width: canvas.width,
+      height: canvas.height,
+    });
+    if (!result.ok) {
+      setStatus("error");
+      setError(result.error || "Failed to start stream");
+      return;
     }
 
     const mimeCandidates = [
@@ -96,13 +116,6 @@ export function useStreamEngine() {
     recorder.start(250);
     recorderRef.current = recorder;
 
-    setStatus(b ? "connecting" : "live");
-    if (!b) {
-      // browser preview — mark all destinations as live for UI feedback
-      const next: Record<string, StreamStatus> = {};
-      enabled.forEach((d) => (next[d.id] = "live"));
-      setPerDestination(next);
-    }
     startedAtRef.current = Date.now();
     setElapsed(0);
     tickRef.current = window.setInterval(() => {
