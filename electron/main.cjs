@@ -9,7 +9,7 @@ const fs = require("fs");
 const { spawn, spawnSync } = require("child_process");
 
 let mainWindow = null;
-const ffmpegProcs = new Map(); // destinationId -> { proc, name }
+const ffmpegProcs = new Map(); // destinationId -> { proc, name, connected, lastError }
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -33,12 +33,26 @@ function createWindow() {
     cb(false);
   });
 
+  const devUrl = process.env.ELECTRON_DEV ? "http://localhost:8080" : null;
   const indexHtml = path.join(__dirname, "..", "dist", "index.html");
-  if (fs.existsSync(indexHtml)) {
+
+  if (devUrl) {
+    mainWindow.loadURL(devUrl);
+    mainWindow.webContents.openDevTools({ mode: "detach" });
+  } else if (fs.existsSync(indexHtml)) {
     mainWindow.loadFile(indexHtml);
   } else {
-    // Dev mode — Vite server
-    mainWindow.loadURL("http://localhost:8080");
+    // No build yet — show a helpful message instead of a blank window.
+    mainWindow.loadURL(
+      "data:text/html;charset=utf-8," +
+        encodeURIComponent(`
+          <html><body style="font-family:system-ui;background:#0a0d14;color:#e7ecf3;padding:32px;">
+            <h2>No build found</h2>
+            <p>Run <code>npm run build</code> first, then <code>npm run electron</code>.</p>
+            <p>For development with hot reload, run <code>npm run dev</code> in one terminal and <code>npm run electron:dev</code> in another.</p>
+          </body></html>
+        `),
+    );
   }
 }
 
@@ -93,8 +107,6 @@ ipcMain.handle("stream:start", (_e, payload) => {
 
     for (const dest of destinations) {
       const target = joinRtmp(dest.rtmpUrl, dest.streamKey);
-      // Single FFmpeg per destination — input: webm/opus from MediaRecorder via stdin.
-      // Re-encode to H.264 + AAC and push as FLV/RTMP.
       const args = [
         "-loglevel", "warning",
         "-fflags", "+genpts+nobuffer",
@@ -118,36 +130,51 @@ ipcMain.handle("stream:start", (_e, payload) => {
       ];
 
       const proc = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
-      ffmpegProcs.set(dest.id, { proc, name: dest.name });
+      const entry = { proc, name: dest.name, connected: false, lastError: "", stderrTail: [] };
+      ffmpegProcs.set(dest.id, entry);
 
       send({ type: "status", destinationId: dest.id, status: "connecting" });
 
-      let connected = false;
       proc.stderr.on("data", (chunk) => {
         const text = chunk.toString();
-        if (!connected && /Stream mapping|Press \[q\]|frame=/.test(text)) {
-          connected = true;
+
+        // Keep a small ring buffer of stderr so we can surface context if FFmpeg
+        // exits with a non-zero code. RTMP errors usually appear here verbatim.
+        entry.stderrTail.push(text);
+        if (entry.stderrTail.length > 20) entry.stderrTail.shift();
+
+        // Mark live only when actual frames are being pushed downstream.
+        // "Stream mapping" alone fires before the RTMP handshake completes.
+        if (!entry.connected && /frame=\s*\d+/.test(text)) {
+          entry.connected = true;
           send({ type: "status", destinationId: dest.id, status: "live" });
         }
-        // forward errors
-        if (/Error|Failed|Connection refused|Invalid/i.test(text)) {
+
+        // Surface known fatal RTMP problems with a friendly hint.
+        const platformError = parsePlatformError(text);
+        if (platformError) {
+          entry.lastError = platformError;
           send({
             type: "status",
             destinationId: dest.id,
             status: "error",
-            message: text.split("\n")[0].slice(0, 240),
+            message: platformError,
           });
         }
       });
+
       proc.on("close", (code) => {
+        const tail = (entry.stderrTail || []).join("").split("\n").filter(Boolean).slice(-3).join(" | ");
         ffmpegProcs.delete(dest.id);
-        send({
-          type: "status",
-          destinationId: dest.id,
-          status: code === 0 ? "ended" : "error",
-          message: code === 0 ? "Stream ended" : `FFmpeg exited with code ${code}`,
-        });
+        if (code === 0) {
+          send({ type: "status", destinationId: dest.id, status: "ended", message: "Stream ended" });
+        } else {
+          const msg = entry.lastError
+            || `FFmpeg exited with code ${code}. ${tail || "Check RTMP URL and stream key."}`;
+          send({ type: "status", destinationId: dest.id, status: "error", message: msg });
+        }
       });
+
       proc.on("error", (err) => {
         send({ type: "status", destinationId: dest.id, status: "error", message: err.message });
       });
@@ -157,6 +184,36 @@ ipcMain.handle("stream:start", (_e, payload) => {
     return { ok: false, error: err && err.message ? err.message : String(err) };
   }
 });
+
+/**
+ * Translate raw FFmpeg stderr lines into actionable, platform-aware error messages.
+ * Returns null if nothing actionable is detected so the stream can keep trying.
+ */
+function parsePlatformError(text) {
+  const t = text.toLowerCase();
+  if (t.includes("connection refused")) {
+    return "Connection refused by the streaming server. Check the RTMP URL.";
+  }
+  if (t.includes("no route to host") || t.includes("could not resolve")) {
+    return "Cannot reach the streaming server. Check your internet connection and the RTMP URL.";
+  }
+  if (t.includes("rtmp_connect") && t.includes("error")) {
+    return "RTMP handshake failed. The URL or server may be wrong.";
+  }
+  if (t.includes("authentication required") || t.includes("not authorized") || t.includes("403")) {
+    return "Authentication failed. Your stream key is invalid or expired — copy a fresh one from the platform.";
+  }
+  if (t.includes("invalid stream key") || t.includes("bad request") || t.includes("400")) {
+    return "Invalid stream key. Copy a fresh one from the platform's Live Producer / Stream Settings.";
+  }
+  if (t.includes("end of file") && t.includes("rtmp")) {
+    return "Stream ended by server. Likely a bad stream key or the platform isn't expecting a stream right now.";
+  }
+  if (t.includes("immediate exit requested")) {
+    return "Stream stopped by FFmpeg.";
+  }
+  return null;
+}
 
 ipcMain.on("stream:video-chunk", (_e, buf) => {
   const data = Buffer.from(buf);
