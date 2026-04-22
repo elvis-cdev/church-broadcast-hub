@@ -427,13 +427,20 @@ const Index = () => {
           </Section>
 
           {!isElectron() && (
-            <div className="panel p-3 text-xs space-y-2">
+            <div className="panel p-3 text-xs space-y-2 border-accent/40">
               <div className="flex items-start gap-2">
-                <Download className="h-4 w-4 text-accent mt-0.5 shrink-0" />
-                <div>
-                  <p className="font-semibold text-foreground">Get the desktop app</p>
+                <AlertTriangle className="h-4 w-4 text-accent mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="font-semibold text-foreground">Browser preview — RTMP disabled</p>
                   <p className="text-muted-foreground">
-                    RTMP push to Facebook/YouTube/Twitch requires the desktop build (uses FFmpeg). Browser preview is for layout & device tests only.
+                    Browsers cannot push to Facebook / YouTube / Twitch. Go Live is blocked here.
+                  </p>
+                  <p className="text-muted-foreground">To stream for real, run the desktop app:</p>
+                  <code className="block rounded bg-secondary/60 border border-border px-2 py-1 font-mono text-[10px] text-foreground">
+                    npm run build && npm run electron
+                  </code>
+                  <p className="text-muted-foreground">
+                    FFmpeg must be installed on your system. <Download className="inline h-3 w-3" /> See README for packaged builds.
                   </p>
                 </div>
               </div>
