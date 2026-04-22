@@ -381,7 +381,17 @@ const Index = () => {
               lastError={listener.lastError}
               suggestions={listener.suggestions}
               callsThisSession={listener.callsThisSession}
-              onStart={listener.start}
+              sourceLabel={listener.sourceLabel}
+              selectedAudioLabel={
+                audioDevices.find((d) => d.deviceId === audioDeviceId)?.label || ""
+              }
+              onStart={() =>
+                listener.start({
+                  sourceLabel:
+                    audioDevices.find((d) => d.deviceId === audioDeviceId)?.label ||
+                    "system default microphone",
+                })
+              }
               onStop={listener.stop}
               onApply={applyScripture}
               onDismiss={listener.dismiss}
