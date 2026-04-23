@@ -228,6 +228,9 @@ function parsePlatformError(text) {
   if (t.includes("end of file") && t.includes("rtmp")) {
     return "Stream ended by server. Likely a bad stream key or the platform isn't expecting a stream right now.";
   }
+  if (t.includes("session has been invalidated") || t.includes("tls") && t.includes("invalidated")) {
+    return "Facebook rejected the connection (TLS session invalidated). This almost always means the stream key was already used or expired. Go to Facebook Live Producer, copy a FRESH stream key, paste it here, and try again. Tip: enable 'Use a persistent stream key' in Facebook so you don't have to recopy each time.";
+  }
   if (t.includes("immediate exit requested")) {
     return "Stream stopped by FFmpeg.";
   }
