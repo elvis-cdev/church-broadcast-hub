@@ -19,7 +19,7 @@
     "electron:pack:win": "vite build && electron-packager . \"Sanctuary Stream\" --platform=win32 --arch=x64 --out=electron-release --overwrite --ignore=^/src --ignore=^/public --ignore=^/electron-release"
   },
   "dependencies": {
-    "@electron/packager": "^18.3.0",
+    "@electron/packager": "^20.0.0",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "^1.2.11",
     "@radix-ui/react-alert-dialog": "^1.1.14",
@@ -55,7 +55,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^3.6.0",
-    "electron": "^32.0.0",
+    "electron": "^41.3.0",
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.462.0",
