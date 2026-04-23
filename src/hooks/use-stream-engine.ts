@@ -96,10 +96,13 @@ export function useStreamEngine() {
       return;
     }
 
+    // Order matters: VP8 has the most predictable timestamps coming out of
+    // Chromium's MediaRecorder, which is what Facebook's RTMP ingest needs.
+    // H.264-in-WebM is technically supported but ships broken DTS on Linux.
     const mimeCandidates = [
-      "video/webm;codecs=h264,opus",
-      "video/webm;codecs=vp9,opus",
       "video/webm;codecs=vp8,opus",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=h264,opus",
       "video/webm",
     ];
     const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
@@ -113,7 +116,8 @@ export function useStreamEngine() {
       const buf = await ev.data.arrayBuffer();
       bridge()?.pushVideoChunk(buf);
     };
-    recorder.start(250);
+    // 100ms chunks keep FB's ingest buffer fed; bigger chunks cause stalls.
+    recorder.start(100);
     recorderRef.current = recorder;
 
     startedAtRef.current = Date.now();
