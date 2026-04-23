@@ -82,19 +82,6 @@ export function useStreamEngine() {
       setError(check.hint || "FFmpeg is not installed. Install FFmpeg and try again.");
       return;
     }
-    const result = await b.startStream({
-      destinations: enabled.map((d) => ({ id: d.id, name: d.name, rtmpUrl: d.rtmpUrl, streamKey: d.streamKey })),
-      videoBitrateKbps,
-      audioBitrateKbps: 160,
-      fps,
-      width: canvas.width,
-      height: canvas.height,
-    });
-    if (!result.ok) {
-      setStatus("error");
-      setError(result.error || "Failed to start stream");
-      return;
-    }
 
     // Order matters: VP8 has the most predictable timestamps coming out of
     // Chromium's MediaRecorder, which is what Facebook's RTMP ingest needs.
@@ -111,9 +98,47 @@ export function useStreamEngine() {
       videoBitsPerSecond: videoBitrateKbps * 1000,
       audioBitsPerSecond: 160_000,
     });
+
+    // CRITICAL: FFmpeg fails with "Invalid data found when processing input"
+    // (exit code 183) if the very first bytes it reads aren't the WebM EBML
+    // header. We buffer chunks here, wait for the FIRST one (which contains the
+    // header), THEN start FFmpeg and flush the buffer. This eliminates the race.
+    let ffmpegStarted = false;
+    const pendingChunks: ArrayBuffer[] = [];
+
+    const startFfmpeg = async () => {
+      const result = await b.startStream({
+        destinations: enabled.map((d) => ({ id: d.id, name: d.name, rtmpUrl: d.rtmpUrl, streamKey: d.streamKey })),
+        videoBitrateKbps,
+        audioBitrateKbps: 160,
+        fps,
+        width: canvas.width,
+        height: canvas.height,
+      });
+      if (!result.ok) {
+        setStatus("error");
+        setError(result.error || "Failed to start stream");
+        try { recorder.stop(); } catch { /* noop */ }
+        return false;
+      }
+      // Flush the header + any buffered chunks in arrival order.
+      for (const buf of pendingChunks) bridge()?.pushVideoChunk(buf);
+      pendingChunks.length = 0;
+      ffmpegStarted = true;
+      return true;
+    };
+
     recorder.ondataavailable = async (ev) => {
       if (!ev.data || ev.data.size === 0) return;
       const buf = await ev.data.arrayBuffer();
+      if (!ffmpegStarted) {
+        pendingChunks.push(buf);
+        // First chunk arrived → it contains the EBML header. Safe to launch FFmpeg now.
+        if (pendingChunks.length === 1) {
+          await startFfmpeg();
+        }
+        return;
+      }
       bridge()?.pushVideoChunk(buf);
     };
     // 100ms chunks keep FB's ingest buffer fed; bigger chunks cause stalls.
