@@ -212,6 +212,9 @@ ipcMain.handle("stream:start", (_e, payload) => {
  */
 function parsePlatformError(text) {
   const t = text.toLowerCase();
+  if (t.includes("invalid data found when processing input")) {
+    return "FFmpeg couldn't read the video stream header. Click Stop, wait 2 seconds, then click Go Live again — the encoder needs a fresh start.";
+  }
   if (t.includes("connection refused")) {
     return "Connection refused by the streaming server. Check the RTMP URL.";
   }
