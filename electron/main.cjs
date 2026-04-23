@@ -109,14 +109,16 @@ ipcMain.handle("stream:start", (_e, payload) => {
       const target = joinRtmp(dest.rtmpUrl, dest.streamKey);
       // Facebook/YouTube/Twitch all want H.264 + AAC in an FLV container with
       // monotonic timestamps and a GOP of ~2s. MediaRecorder gives us WebM with
-      // jittery PTS, so we tell FFmpeg the input is webm and rewrite timestamps
-      // from the wallclock — this is what makes FB stop showing "trouble playing".
+      // jittery PTS, so we use wallclock timestamps and let FFmpeg probe the
+      // matroska/webm header itself with a generous probe window — forcing
+      // "-f webm" before the EBML header arrives causes "Invalid data" (code 183).
       const args = [
         "-loglevel", "warning",
-        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-fflags", "+genpts+igndts+discardcorrupt+nobuffer",
         "-use_wallclock_as_timestamps", "1",
-        "-thread_queue_size", "1024",
-        "-f", "webm",
+        "-thread_queue_size", "4096",
+        "-probesize", "10M",
+        "-analyzeduration", "10M",
         "-i", "pipe:0",
         // Video: H.264 baseline 3.1 is the most universally accepted profile
         // for RTMP ingest. veryfast/zerolatency keeps CPU sane on most laptops.
@@ -210,6 +212,9 @@ ipcMain.handle("stream:start", (_e, payload) => {
  */
 function parsePlatformError(text) {
   const t = text.toLowerCase();
+  if (t.includes("invalid data found when processing input")) {
+    return "FFmpeg couldn't read the video stream header. Click Stop, wait 2 seconds, then click Go Live again — the encoder needs a fresh start.";
+  }
   if (t.includes("connection refused")) {
     return "Connection refused by the streaming server. Check the RTMP URL.";
   }
