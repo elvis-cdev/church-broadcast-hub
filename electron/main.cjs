@@ -107,25 +107,44 @@ ipcMain.handle("stream:start", (_e, payload) => {
 
     for (const dest of destinations) {
       const target = joinRtmp(dest.rtmpUrl, dest.streamKey);
+      // Facebook/YouTube/Twitch all want H.264 + AAC in an FLV container with
+      // monotonic timestamps and a GOP of ~2s. MediaRecorder gives us WebM with
+      // jittery PTS, so we tell FFmpeg the input is webm and rewrite timestamps
+      // from the wallclock — this is what makes FB stop showing "trouble playing".
       const args = [
         "-loglevel", "warning",
-        "-fflags", "+genpts+nobuffer",
+        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-use_wallclock_as_timestamps", "1",
+        "-thread_queue_size", "1024",
+        "-f", "webm",
         "-i", "pipe:0",
+        // Video: H.264 baseline 3.1 is the most universally accepted profile
+        // for RTMP ingest. veryfast/zerolatency keeps CPU sane on most laptops.
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-tune", "zerolatency",
+        "-profile:v", "main",
+        "-level", "4.0",
         "-pix_fmt", "yuv420p",
+        "-r", String(fps),
+        "-vsync", "cfr",
         "-g", String(fps * 2),
         "-keyint_min", String(fps * 2),
+        "-sc_threshold", "0",
+        "-x264-params", `nal-hrd=cbr:force-cfr=1:keyint=${fps * 2}:min-keyint=${fps * 2}:scenecut=0`,
         "-b:v", `${videoBitrateKbps}k`,
+        "-minrate", `${videoBitrateKbps}k`,
         "-maxrate", `${videoBitrateKbps}k`,
-        "-bufsize", `${videoBitrateKbps * 2}k`,
-        "-r", String(fps),
+        "-bufsize", `${videoBitrateKbps}k`,
+        // Audio: AAC-LC stereo @ 48kHz is what every major platform expects.
         "-c:a", "aac",
+        "-profile:a", "aac_low",
         "-b:a", `${audioBitrateKbps}k`,
         "-ar", "48000",
         "-ac", "2",
+        "-async", "1",
         "-f", "flv",
+        "-flvflags", "no_duration_filesize",
         target,
       ];
 
