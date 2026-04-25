@@ -11,6 +11,16 @@ const { spawn, spawnSync } = require("child_process");
 let mainWindow = null;
 const ffmpegProcs = new Map(); // destinationId -> { proc, name, connected, lastError }
 
+// Global last-resort guards: an unhandled EPIPE on a child stdin or a stray
+// promise rejection would otherwise show the user "A JavaScript error occurred
+// in the main process". Log to stderr and keep the app alive.
+process.on("uncaughtException", (err) => {
+  console.error("[main] uncaughtException:", err && err.stack ? err.stack : err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[main] unhandledRejection:", reason);
+});
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -96,7 +106,7 @@ ipcMain.handle("ffmpeg:check", () => detectFfmpeg());
 
 ipcMain.handle("stream:start", (_e, payload) => {
   try {
-    const { destinations, videoBitrateKbps, audioBitrateKbps, fps, videoCodec } = payload;
+    const { destinations, videoBitrateKbps, audioBitrateKbps, fps } = payload;
     if (!destinations || destinations.length === 0) {
       return { ok: false, error: "No destinations provided" };
     }
@@ -105,39 +115,42 @@ ipcMain.handle("stream:start", (_e, payload) => {
 
     stopAll();
 
-    // If the renderer encoded H.264 directly we can stream-copy (huge CPU win).
-    // Otherwise (VP8/VP9 fallback on Linux Chromium) we must transcode.
-    const canCopyVideo = videoCodec === "h264" || videoCodec === "avc1";
-
     for (const dest of destinations) {
       const target = joinRtmp(dest.rtmpUrl, dest.streamKey);
 
+      // Force matroska demuxer (handles Chromium's WebM-with-H264 quirk that
+      // the strict "webm" demuxer rejects with "Invalid data found"). Matroska
+      // is a superset of WebM so VP8/VP9 streams parse cleanly too.
       const inputArgs = [
         "-loglevel", "warning",
-        "-fflags", "+genpts+igndts+discardcorrupt",
-        "-thread_queue_size", "512",
-        "-probesize", "10M",
+        "-fflags", "+genpts+igndts+discardcorrupt+nobuffer",
+        "-thread_queue_size", "1024",
+        "-probesize", "32M",
         "-analyzeduration", "10M",
+        "-f", "matroska",
         "-i", "pipe:0",
       ];
 
-      const videoArgs = canCopyVideo
-        ? ["-c:v", "copy"]
-        : [
-            "-c:v", "libx264",
-            "-preset", "ultrafast",      // ultrafast = lowest CPU
-            "-tune", "zerolatency",
-            "-profile:v", "main",
-            "-level", "4.0",
-            "-pix_fmt", "yuv420p",
-            "-r", String(fps),
-            "-g", String(fps * 2),
-            "-keyint_min", String(fps * 2),
-            "-sc_threshold", "0",
-            "-b:v", `${videoBitrateKbps}k`,
-            "-maxrate", `${videoBitrateKbps}k`,
-            "-bufsize", `${videoBitrateKbps * 2}k`,
-          ];
+      // Always transcode with libx264 ultrafast/zerolatency. Stream-copy from
+      // MediaRecorder is unreliable across Chromium versions because the
+      // generated H.264-in-WebM doesn't always have spec-compliant timestamps,
+      // which Facebook rejects ("trouble playing this video"). Transcoding
+      // gives us clean PTS/DTS and the CPU cost of `ultrafast` is small.
+      const videoArgs = [
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-profile:v", "baseline",   // baseline = max compatibility w/ FB ingest
+        "-level", "4.0",
+        "-pix_fmt", "yuv420p",
+        "-r", String(fps),
+        "-g", String(fps * 2),
+        "-keyint_min", String(fps * 2),
+        "-sc_threshold", "0",
+        "-b:v", `${videoBitrateKbps}k`,
+        "-maxrate", `${videoBitrateKbps}k`,
+        "-bufsize", `${videoBitrateKbps * 2}k`,
+      ];
 
       const args = [
         ...inputArgs,
@@ -156,6 +169,13 @@ ipcMain.handle("stream:start", (_e, payload) => {
       const proc = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
       const entry = { proc, name: dest.name, connected: false, lastError: "", stderrTail: [] };
       ffmpegProcs.set(dest.id, entry);
+
+      // CRITICAL: stdin emits 'error' (EPIPE) when FFmpeg exits before we stop
+      // writing. Without this listener Node aborts the whole Electron process
+      // with the dreaded "A JavaScript error occurred in the main process"
+      // dialog. Swallow it — the close handler will surface the real cause.
+      proc.stdin.on("error", () => { /* handled via stderr/close */ });
+      proc.stdout.on("error", () => { /* same */ });
 
       send({ type: "status", destinationId: dest.id, status: "connecting" });
 
@@ -236,7 +256,7 @@ function parsePlatformError(text) {
   if (t.includes("end of file") && t.includes("rtmp")) {
     return "Stream ended by server. Likely a bad stream key or the platform isn't expecting a stream right now.";
   }
-  if (t.includes("session has been invalidated") || t.includes("tls") && t.includes("invalidated")) {
+  if (t.includes("session has been invalidated") || (t.includes("tls") && t.includes("invalidated"))) {
     return "Facebook rejected the connection (TLS session invalidated). This almost always means the stream key was already used or expired. Go to Facebook Live Producer, copy a FRESH stream key, paste it here, and try again. Tip: enable 'Use a persistent stream key' in Facebook so you don't have to recopy each time.";
   }
   if (t.includes("immediate exit requested")) {
@@ -248,12 +268,16 @@ function parsePlatformError(text) {
 ipcMain.on("stream:video-chunk", (_e, buf) => {
   const data = Buffer.from(buf);
   for (const { proc } of ffmpegProcs.values()) {
-    if (proc.stdin && !proc.stdin.destroyed) {
-      try {
-        proc.stdin.write(data);
-      } catch (_) {
-        // ignore individual write errors; FFmpeg close handler will surface them
-      }
+    const stdin = proc && proc.stdin;
+    // writableEnded / destroyed both checked: writing after end throws
+    // "ERR_STREAM_WRITE_AFTER_END" which surfaces as the "javascript error
+    // in main process" dialog. Silently drop chunks once the pipe is closed.
+    if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) continue;
+    try {
+      stdin.write(data);
+    } catch (_) {
+      // EPIPE / ECONNRESET — FFmpeg already exited. The close handler will
+      // surface the real error to the UI; nothing to do here.
     }
   }
 });
