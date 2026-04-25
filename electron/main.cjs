@@ -11,6 +11,16 @@ const { spawn, spawnSync } = require("child_process");
 let mainWindow = null;
 const ffmpegProcs = new Map(); // destinationId -> { proc, name, connected, lastError }
 
+// Global last-resort guards: an unhandled EPIPE on a child stdin or a stray
+// promise rejection would otherwise show the user "A JavaScript error occurred
+// in the main process". Log to stderr and keep the app alive.
+process.on("uncaughtException", (err) => {
+  console.error("[main] uncaughtException:", err && err.stack ? err.stack : err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[main] unhandledRejection:", reason);
+});
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
