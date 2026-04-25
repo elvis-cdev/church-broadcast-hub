@@ -14,6 +14,7 @@ export type StartStreamPayload = {
   fps: number;
   width: number;
   height: number;
+  hasAudio: boolean;
   videoCodec: "h264" | "avc1" | "vp8" | "vp9" | "unknown";
 };
 
