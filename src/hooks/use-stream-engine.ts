@@ -83,23 +83,16 @@ export function useStreamEngine() {
       return;
     }
 
-    // CRITICAL FOR PERFORMANCE: prefer H.264 so FFmpeg can stream-copy
-    // (no transcode = ~70% less CPU). Fall back to VP8/VP9 only if H.264
-    // isn't available (in which case the main process will need to transcode).
+    // We always transcode in the main process now (libx264 ultrafast), so
+    // we don't care which codec MediaRecorder picks — VP8 is actually the
+    // most reliable choice on Linux Chromium for FFmpeg's matroska demuxer.
     const mimeCandidates = [
-      "video/webm;codecs=h264,opus",
-      "video/webm;codecs=avc1,opus",
       "video/webm;codecs=vp8,opus",
       "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=h264,opus",
       "video/webm",
     ];
     const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
-
-    // Detect chosen codec so the main process knows whether it can stream-copy
-    // (h264/avc1) or has to transcode (vp8/vp9). Stream-copy = massive CPU win.
-    const codecMatch = mimeType.match(/codecs=([a-z0-9]+)/i);
-    const videoCodec = (codecMatch?.[1]?.toLowerCase() ?? "unknown") as
-      | "h264" | "avc1" | "vp8" | "vp9" | "unknown";
 
     const recorder = new MediaRecorder(combined, {
       mimeType,
@@ -107,14 +100,19 @@ export function useStreamEngine() {
       audioBitsPerSecond: 160_000,
     });
 
-    // CRITICAL: FFmpeg fails with "Invalid data found when processing input"
-    // (exit code 183) if the very first bytes it reads aren't the WebM EBML
-    // header. We buffer chunks here, wait for the FIRST one (which contains the
-    // header), THEN start FFmpeg and flush the buffer. This eliminates the race.
+    // CRITICAL race fix: FFmpeg fails with "Invalid data found when processing
+    // input" if it starts reading from stdin before MediaRecorder has emitted
+    // BOTH the EBML header AND at least one cluster. We buffer the first 2
+    // chunks, then launch FFmpeg and flush. This is the most reliable startup
+    // sequence we've found across Chromium versions.
     let ffmpegStarted = false;
+    let ffmpegStarting = false;
     const pendingChunks: ArrayBuffer[] = [];
+    const REQUIRED_PRELOAD_CHUNKS = 2;
 
     const startFfmpeg = async () => {
+      if (ffmpegStarting || ffmpegStarted) return;
+      ffmpegStarting = true;
       const result = await b.startStream({
         destinations: enabled.map((d) => ({ id: d.id, name: d.name, rtmpUrl: d.rtmpUrl, streamKey: d.streamKey })),
         videoBitrateKbps,
@@ -122,19 +120,20 @@ export function useStreamEngine() {
         fps,
         width: canvas.width,
         height: canvas.height,
-        videoCodec,
+        videoCodec: "vp8", // informational only — main process always transcodes
       });
       if (!result.ok) {
         setStatus("error");
         setError(result.error || "Failed to start stream");
         try { recorder.stop(); } catch { /* noop */ }
-        return false;
+        ffmpegStarting = false;
+        return;
       }
-      // Flush the header + any buffered chunks in arrival order.
+      // Flush header + buffered clusters in arrival order.
       for (const buf of pendingChunks) bridge()?.pushVideoChunk(buf);
       pendingChunks.length = 0;
       ffmpegStarted = true;
-      return true;
+      ffmpegStarting = false;
     };
 
     recorder.ondataavailable = async (ev) => {
@@ -142,17 +141,17 @@ export function useStreamEngine() {
       const buf = await ev.data.arrayBuffer();
       if (!ffmpegStarted) {
         pendingChunks.push(buf);
-        // First chunk arrived → it contains the EBML header. Safe to launch FFmpeg now.
-        if (pendingChunks.length === 1) {
+        if (pendingChunks.length >= REQUIRED_PRELOAD_CHUNKS && !ffmpegStarting) {
           await startFfmpeg();
         }
         return;
       }
       bridge()?.pushVideoChunk(buf);
     };
-    // 200ms chunks: small enough to keep FB's ingest fed, large enough that
-    // we're not paying IPC overhead 10x/sec — meaningful CPU savings.
-    recorder.start(200);
+    // 250ms chunks: with 2 chunks needed before launch, FFmpeg starts within
+    // ~500ms of going live — imperceptible to the user but enough data for
+    // the matroska demuxer to find header + first cluster reliably.
+    recorder.start(250);
     recorderRef.current = recorder;
 
     startedAtRef.current = Date.now();
