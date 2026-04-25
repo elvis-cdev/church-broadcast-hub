@@ -74,6 +74,7 @@ export function useStreamEngine() {
     const canvasStream = canvas.captureStream(fps);
     const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
     if (audioStream) tracks.push(...audioStream.getAudioTracks());
+    const hasAudio = !!audioStream?.getAudioTracks().some((track) => track.readyState === "live");
     const combined = new MediaStream(tracks);
 
     const check = await b.checkFfmpeg();
@@ -83,13 +84,10 @@ export function useStreamEngine() {
       return;
     }
 
-    // We always transcode in the main process now (libx264 ultrafast), so
-    // we don't care which codec MediaRecorder picks — VP8 is actually the
-    // most reliable choice on Linux Chromium for FFmpeg's matroska demuxer.
+    // Use VP8 WebM only: Electron/Chromium emits consistent EBML/WebM headers
+    // here, and FFmpeg can then transcode to Facebook-compatible H.264/AAC.
     const mimeCandidates = [
       "video/webm;codecs=vp8,opus",
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=h264,opus",
       "video/webm",
     ];
     const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
@@ -102,13 +100,12 @@ export function useStreamEngine() {
 
     // CRITICAL race fix: FFmpeg fails with "Invalid data found when processing
     // input" if it starts reading from stdin before MediaRecorder has emitted
-    // BOTH the EBML header AND at least one cluster. We buffer the first 2
-    // chunks, then launch FFmpeg and flush. This is the most reliable startup
-    // sequence we've found across Chromium versions.
+    // the EBML header plus enough clusters for probing. Buffer one full second
+    // before launching FFmpeg, then flush the pre-roll in order.
     let ffmpegStarted = false;
     let ffmpegStarting = false;
     const pendingChunks: ArrayBuffer[] = [];
-    const REQUIRED_PRELOAD_CHUNKS = 2;
+    const REQUIRED_PRELOAD_CHUNKS = 4;
 
     const startFfmpeg = async () => {
       if (ffmpegStarting || ffmpegStarted) return;
@@ -120,6 +117,7 @@ export function useStreamEngine() {
         fps,
         width: canvas.width,
         height: canvas.height,
+        hasAudio,
         videoCodec: "vp8", // informational only — main process always transcodes
       });
       if (!result.ok) {
@@ -148,9 +146,8 @@ export function useStreamEngine() {
       }
       bridge()?.pushVideoChunk(buf);
     };
-    // 250ms chunks: with 2 chunks needed before launch, FFmpeg starts within
-    // ~500ms of going live — imperceptible to the user but enough data for
-    // the matroska demuxer to find header + first cluster reliably.
+    // 250ms chunks: with 4 chunks needed before launch, FFmpeg starts after
+    // ~1s of clean pre-roll — still quick, but much more reliable for probing.
     recorder.start(250);
     recorderRef.current = recorder;
 
