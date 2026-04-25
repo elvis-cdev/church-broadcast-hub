@@ -251,12 +251,16 @@ function parsePlatformError(text) {
 ipcMain.on("stream:video-chunk", (_e, buf) => {
   const data = Buffer.from(buf);
   for (const { proc } of ffmpegProcs.values()) {
-    if (proc.stdin && !proc.stdin.destroyed) {
-      try {
-        proc.stdin.write(data);
-      } catch (_) {
-        // ignore individual write errors; FFmpeg close handler will surface them
-      }
+    const stdin = proc && proc.stdin;
+    // writableEnded / destroyed both checked: writing after end throws
+    // "ERR_STREAM_WRITE_AFTER_END" which surfaces as the "javascript error
+    // in main process" dialog. Silently drop chunks once the pipe is closed.
+    if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) continue;
+    try {
+      stdin.write(data);
+    } catch (_) {
+      // EPIPE / ECONNRESET — FFmpeg already exited. The close handler will
+      // surface the real error to the UI; nothing to do here.
     }
   }
 });
