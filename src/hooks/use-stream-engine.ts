@@ -150,8 +150,9 @@ export function useStreamEngine() {
       }
       bridge()?.pushVideoChunk(buf);
     };
-    // 100ms chunks keep FB's ingest buffer fed; bigger chunks cause stalls.
-    recorder.start(100);
+    // 200ms chunks: small enough to keep FB's ingest fed, large enough that
+    // we're not paying IPC overhead 10x/sec — meaningful CPU savings.
+    recorder.start(200);
     recorderRef.current = recorder;
 
     startedAtRef.current = Date.now();
