@@ -160,6 +160,13 @@ ipcMain.handle("stream:start", (_e, payload) => {
       const entry = { proc, name: dest.name, connected: false, lastError: "", stderrTail: [] };
       ffmpegProcs.set(dest.id, entry);
 
+      // CRITICAL: stdin emits 'error' (EPIPE) when FFmpeg exits before we stop
+      // writing. Without this listener Node aborts the whole Electron process
+      // with the dreaded "A JavaScript error occurred in the main process"
+      // dialog. Swallow it — the close handler will surface the real cause.
+      proc.stdin.on("error", () => { /* handled via stderr/close */ });
+      proc.stdout.on("error", () => { /* same */ });
+
       send({ type: "status", destinationId: dest.id, status: "connecting" });
 
       proc.stderr.on("data", (chunk) => {
