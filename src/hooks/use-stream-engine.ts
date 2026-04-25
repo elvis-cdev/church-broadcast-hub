@@ -94,6 +94,13 @@ export function useStreamEngine() {
       "video/webm",
     ];
     const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
+
+    // Detect chosen codec so the main process knows whether it can stream-copy
+    // (h264/avc1) or has to transcode (vp8/vp9). Stream-copy = massive CPU win.
+    const codecMatch = mimeType.match(/codecs=([a-z0-9]+)/i);
+    const videoCodec = (codecMatch?.[1]?.toLowerCase() ?? "unknown") as
+      | "h264" | "avc1" | "vp8" | "vp9" | "unknown";
+
     const recorder = new MediaRecorder(combined, {
       mimeType,
       videoBitsPerSecond: videoBitrateKbps * 1000,
@@ -115,6 +122,7 @@ export function useStreamEngine() {
         fps,
         width: canvas.width,
         height: canvas.height,
+        videoCodec,
       });
       if (!result.ok) {
         setStatus("error");
