@@ -96,7 +96,7 @@ ipcMain.handle("ffmpeg:check", () => detectFfmpeg());
 
 ipcMain.handle("stream:start", (_e, payload) => {
   try {
-    const { destinations, videoBitrateKbps, audioBitrateKbps, fps } = payload;
+    const { destinations, videoBitrateKbps, audioBitrateKbps, fps, videoCodec } = payload;
     if (!destinations || destinations.length === 0) {
       return { ok: false, error: "No destinations provided" };
     }
@@ -105,40 +105,43 @@ ipcMain.handle("stream:start", (_e, payload) => {
 
     stopAll();
 
+    // If the renderer encoded H.264 directly we can stream-copy (huge CPU win).
+    // Otherwise (VP8/VP9 fallback on Linux Chromium) we must transcode.
+    const canCopyVideo = videoCodec === "h264" || videoCodec === "avc1";
+
     for (const dest of destinations) {
       const target = joinRtmp(dest.rtmpUrl, dest.streamKey);
-      // Facebook/YouTube/Twitch all want H.264 + AAC in an FLV container with
-      // monotonic timestamps and a GOP of ~2s. MediaRecorder gives us WebM with
-      // jittery PTS, so we use wallclock timestamps and let FFmpeg probe the
-      // matroska/webm header itself with a generous probe window — forcing
-      // "-f webm" before the EBML header arrives causes "Invalid data" (code 183).
-      const args = [
+
+      const inputArgs = [
         "-loglevel", "warning",
-        "-fflags", "+genpts+igndts+discardcorrupt+nobuffer",
-        "-use_wallclock_as_timestamps", "1",
-        "-thread_queue_size", "4096",
+        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-thread_queue_size", "512",
         "-probesize", "10M",
         "-analyzeduration", "10M",
         "-i", "pipe:0",
-        // Video: H.264 baseline 3.1 is the most universally accepted profile
-        // for RTMP ingest. veryfast/zerolatency keeps CPU sane on most laptops.
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-tune", "zerolatency",
-        "-profile:v", "main",
-        "-level", "4.0",
-        "-pix_fmt", "yuv420p",
-        "-r", String(fps),
-        "-vsync", "cfr",
-        "-g", String(fps * 2),
-        "-keyint_min", String(fps * 2),
-        "-sc_threshold", "0",
-        "-x264-params", `nal-hrd=cbr:force-cfr=1:keyint=${fps * 2}:min-keyint=${fps * 2}:scenecut=0`,
-        "-b:v", `${videoBitrateKbps}k`,
-        "-minrate", `${videoBitrateKbps}k`,
-        "-maxrate", `${videoBitrateKbps}k`,
-        "-bufsize", `${videoBitrateKbps}k`,
-        // Audio: AAC-LC stereo @ 48kHz is what every major platform expects.
+      ];
+
+      const videoArgs = canCopyVideo
+        ? ["-c:v", "copy"]
+        : [
+            "-c:v", "libx264",
+            "-preset", "ultrafast",      // ultrafast = lowest CPU
+            "-tune", "zerolatency",
+            "-profile:v", "main",
+            "-level", "4.0",
+            "-pix_fmt", "yuv420p",
+            "-r", String(fps),
+            "-g", String(fps * 2),
+            "-keyint_min", String(fps * 2),
+            "-sc_threshold", "0",
+            "-b:v", `${videoBitrateKbps}k`,
+            "-maxrate", `${videoBitrateKbps}k`,
+            "-bufsize", `${videoBitrateKbps * 2}k`,
+          ];
+
+      const args = [
+        ...inputArgs,
+        ...videoArgs,
         "-c:a", "aac",
         "-profile:a", "aac_low",
         "-b:a", `${audioBitrateKbps}k`,
@@ -146,7 +149,7 @@ ipcMain.handle("stream:start", (_e, payload) => {
         "-ac", "2",
         "-async", "1",
         "-f", "flv",
-        "-flvflags", "no_duration_filesize",
+        "-flvflags", "no_duration_filesize+aac_seq_header_detect",
         target,
       ];
 
