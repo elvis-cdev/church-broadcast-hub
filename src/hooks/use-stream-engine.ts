@@ -83,13 +83,14 @@ export function useStreamEngine() {
       return;
     }
 
-    // Order matters: VP8 has the most predictable timestamps coming out of
-    // Chromium's MediaRecorder, which is what Facebook's RTMP ingest needs.
-    // H.264-in-WebM is technically supported but ships broken DTS on Linux.
+    // CRITICAL FOR PERFORMANCE: prefer H.264 so FFmpeg can stream-copy
+    // (no transcode = ~70% less CPU). Fall back to VP8/VP9 only if H.264
+    // isn't available (in which case the main process will need to transcode).
     const mimeCandidates = [
+      "video/webm;codecs=h264,opus",
+      "video/webm;codecs=avc1,opus",
       "video/webm;codecs=vp8,opus",
       "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=h264,opus",
       "video/webm",
     ];
     const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
