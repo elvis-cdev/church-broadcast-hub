@@ -106,7 +106,7 @@ ipcMain.handle("ffmpeg:check", () => detectFfmpeg());
 
 ipcMain.handle("stream:start", (_e, payload) => {
   try {
-    const { destinations, videoBitrateKbps, audioBitrateKbps, fps } = payload;
+    const { destinations, videoBitrateKbps, audioBitrateKbps, fps, hasAudio = true } = payload;
     if (!destinations || destinations.length === 0) {
       return { ok: false, error: "No destinations provided" };
     }
@@ -118,18 +118,26 @@ ipcMain.handle("stream:start", (_e, payload) => {
     for (const dest of destinations) {
       const target = joinRtmp(dest.rtmpUrl, dest.streamKey);
 
-      // Force matroska demuxer (handles Chromium's WebM-with-H264 quirk that
-      // the strict "webm" demuxer rejects with "Invalid data found"). Matroska
-      // is a superset of WebM so VP8/VP9 streams parse cleanly too.
+      // Renderer now sends VP8 WebM only, so use the strict webm demuxer. This
+      // is more reliable than forcing generic matroska and prevents intermittent
+      // "Invalid data found" startup failures on Linux Chromium/Electron.
       const inputArgs = [
-        "-loglevel", "warning",
-        "-fflags", "+genpts+igndts+discardcorrupt+nobuffer",
+        "-loglevel", "info",
+        "-stats",
+        "-fflags", "+genpts+igndts+discardcorrupt",
         "-thread_queue_size", "1024",
         "-probesize", "32M",
         "-analyzeduration", "10M",
-        "-f", "matroska",
+        "-f", "webm",
         "-i", "pipe:0",
       ];
+
+      // Facebook is much happier when RTMP contains an audio stream. If the
+      // user has no mic/audio source selected, add a silent AAC track instead
+      // of sending video-only FLV.
+      if (!hasAudio) {
+        inputArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
+      }
 
       // Always transcode with libx264 ultrafast/zerolatency. Stream-copy from
       // MediaRecorder is unreliable across Chromium versions because the
@@ -142,6 +150,8 @@ ipcMain.handle("stream:start", (_e, payload) => {
         "-tune", "zerolatency",
         "-profile:v", "baseline",   // baseline = max compatibility w/ FB ingest
         "-level", "4.0",
+        "-threads", "2",
+        "-vf", `fps=${fps},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`,
         "-pix_fmt", "yuv420p",
         "-r", String(fps),
         "-g", String(fps * 2),
@@ -152,16 +162,26 @@ ipcMain.handle("stream:start", (_e, payload) => {
         "-bufsize", `${videoBitrateKbps * 2}k`,
       ];
 
+      const mapArgs = hasAudio
+        ? ["-map", "0:v:0", "-map", "0:a:0?"]
+        : ["-map", "0:v:0", "-map", "1:a:0", "-shortest"];
+
       const args = [
         ...inputArgs,
+        ...mapArgs,
         ...videoArgs,
         "-c:a", "aac",
         "-profile:a", "aac_low",
         "-b:a", `${audioBitrateKbps}k`,
         "-ar", "48000",
         "-ac", "2",
-        "-async", "1",
+        "-af", "aresample=async=1:first_pts=0",
+        "-fps_mode", "cfr",
+        "-max_muxing_queue_size", "1024",
         "-f", "flv",
+        "-muxdelay", "0",
+        "-muxpreload", "0",
+        "-rtmp_live", "live",
         "-flvflags", "no_duration_filesize+aac_seq_header_detect",
         target,
       ];
